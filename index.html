@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>QuickChat — Modern</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1"></script>
+
+  <!-- Firebase SDK (Compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+
+  <style>
+    /* Emoji picker placement */
+    emoji-picker { position: absolute; bottom: 64px; right: 12px; z-index: 50;}
+
+    /* Dark mode helpers (on top of Tailwind) */
+    .dark body { background: #111827; color: #e5e7eb; }
+    .glass {
+      backdrop-filter: blur(10px);
+      background: rgba(255,255,255,0.6);
+    }
+    .dark .glass { background: rgba(31,41,55,0.6); }
+    .bubble-me {
+      background: linear-gradient(135deg,#3b82f6 0%, #2563eb 100%);
+      color:#fff;
+    }
+    .dark .bubble-other { background:#374151; color:#e5e7eb; }
+    .bubble-other { background:#e5e7eb; color:#111827; }
+    .status-dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    .online { background:#22c55e; }
+    .offline { background:#9ca3af; }
+    .drawer { transform: translateX(100%); }
+    .drawer.open { transform: translateX(0); }
+    .overlay { background: rgba(0,0,0,0.35); display:none; }
+    .overlay.show { display:block; }
+    .msg-actions button { opacity:0.7 }
+    .msg-actions button:hover { opacity:1 }
+    .reply-preview { border-left: 3px solid #60a5fa; padding-left:8px; font-size:12px; opacity:0.9 }
+    .file-pill { padding:6px 10px; border-radius:10px; border:1px solid rgba(0,0,0,0.06); display:inline-flex; align-items:center; gap:6px }
+    .rct { font-size: 12px; opacity: 0.8; }
+  </style>
+</head>
+
+<body class="min-h-screen bg-gradient-to-br from-indigo-50 to-emerald-50 dark:from-gray-900 dark:to-gray-800 transition-colors">
+
+  <!-- Loading -->
+  <div id="loading" class="fixed inset-0 hidden items-center justify-center z-50">
+    <div class="w-12 h-12 border-4 border-gray-200 border-t-blue-500 rounded-full animate-spin"></div>
+  </div>
+
+  <!-- Auth Card -->
+  <div id="auth" class="container mx-auto px-4 py-10">
+    <div class="max-w-md mx-auto glass rounded-2xl shadow-xl p-8">
+      <h1 class="text-3xl font-extrabold text-center mb-6">QuickChat</h1>
+      <div class="space-y-3">
+        <input id="email" type="email" placeholder="Email" class="w-full p-3 rounded-xl border"/>
+        <input id="password" type="password" placeholder="Password" class="w-full p-3 rounded-xl border"/>
+        <div class="flex gap-3">
+          <button id="login" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-xl font-semibold">Login</button>
+          <button id="register" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white p-3 rounded-xl font-semibold">Register</button>
+        </div>
+        <p id="auth-error" class="text-red-500 text-sm min-h-[20px]"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat App -->
+  <div id="app" class="hidden h-screen">
+    <div class="flex h-full">
+      <!-- Left: Users & Groups -->
+      <aside class="w-full md:w-80 bg-white dark:bg-gray-900 border-r dark:border-gray-800 flex flex-col">
+        <div class="p-4 flex items-center justify-between border-b dark:border-gray-800">
+          <div class="flex items-center gap-3">
+            <img id="meAvatar" class="w-10 h-10 rounded-full object-cover border" src="https://ui-avatars.com/api/?name=U">
+            <div>
+              <div id="meName" class="font-semibold">Me</div>
+              <div class="text-xs text-gray-500">Ready to chat</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="openProfile" class="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-800">👤</button>
+            <button id="toggleTheme" class="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-800">🌙</button>
+            <button id="logout" class="px-2 py-1 rounded-lg bg-rose-100 text-rose-700">↩</button>
+          </div>
+        </div>
+
+        <div class="p-3">
+          <input id="searchUsers" placeholder="Search users / groups..." class="w-full p-2 rounded-lg border dark:bg-gray-900 dark:border-gray-800"/>
+        </div>
+
+        <div class="px-3 pb-2 flex gap-2">
+          <button id="newChat" class="flex-1 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 p-2 rounded-lg">New DM</button>
+          <button id="newGroup" class="flex-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 p-2 rounded-lg">New Group</button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto" id="threads"></div>
+      </aside>
+
+      <!-- Right: Conversation -->
+      <main class="flex-1 flex flex-col">
+        <!-- Header -->
+        <div id="header" class="h-16 px-4 border-b dark:border-gray-800 flex items-center justify-between bg-white/70 dark:bg-gray-900/60 backdrop-blur">
+          <div class="flex items-center gap-3">
+            <img id="peerAvatar" class="w-9 h-9 rounded-full object-cover" src="https://ui-avatars.com/api/?name=U">
+            <div>
+              <div id="peerName" class="font-semibold">Select a chat</div>
+              <div id="peerStatus" class="text-xs text-gray-500 flex items-center gap-2"><span class="status-dot offline"></span>—</div>
+            </div>
+          </div>
+          <div class="text-sm text-gray-500" id="membersHint"></div>
+        </div>
+
+        <!-- Messages -->
+        <div id="messages" class="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50 dark:bg-gray-800"></div>
+
+        <!-- Typing -->
+        <div id="typing" class="px-4 py-1 text-xs text-gray-500 hidden">Typing…</div>
+
+        <!-- Composer -->
+        <div class="relative p-3 border-t dark:border-gray-800 bg-white dark:bg-gray-900">
+          <div id="replyBox" class="hidden mb-2 p-2 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-sm reply-preview flex items-center justify-between">
+            <div id="replyText">Replying to …</div>
+            <button id="cancelReply" class="px-2 py-1 text-xs rounded hover:bg-blue-100 dark:hover:bg-blue-800">✖</button>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <input id="file" type="file" class="hidden" accept="image/*,video/*,.pdf,.doc,.docx,.ppt,.pptx,.zip,.rar,.txt"/>
+            <label for="file" class="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 cursor-pointer">📎</label>
+
+            <button id="emojiBtn" class="px-3 py-2 rounded-lg bg-yellow-100 dark:bg-yellow-900/40">😊</button>
+            <emoji-picker id="emojiPicker" class="hidden"></emoji-picker>
+
+            <input id="input" placeholder="Type a message…" class="flex-1 p-3 rounded-xl border dark:bg-gray-900 dark:border-gray-800"/>
+            <button id="send" class="px-4 py-2 rounded-xl font-semibold bg-blue-600 hover:bg-blue-700 text-white">Send</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Profile Drawer -->
+  <div id="overlay" class="overlay fixed inset-0 z-40"></div>
+  <div id="drawer" class="drawer fixed right-0 top-0 w-80 h-full z-50 bg-white dark:bg-gray-900 border-l dark:border-gray-800 p-5 transition-transform duration-300">
+    <div class="flex justify-between items-center mb-5">
+      <h3 class="text-lg font-semibold">My Profile</h3>
+      <button id="closeDrawer" class="px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">✖</button>
+    </div>
+    <div class="flex flex-col gap-3">
+      <img id="drawerAvatar" class="w-24 h-24 rounded-full object-cover mx-auto border" src="https://ui-avatars.com/api/?name=U"/>
+      <input id="name" placeholder="Display name" class="p-2 rounded-lg border dark:bg-gray-900 dark:border-gray-800"/>
+      <input id="avatarFile" type="file" accept="image/*"/>
+      <button id="saveProfile" class="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg">Save</button>
+    </div>
+  </div>
+
+  
+  <script>
+    // ====== Firebase ======
+    const firebaseConfig = {
+      apiKey: "AIzaSyCrihDWCju9xH3V1X30Ha3speGZj3skT_8",
+      authDomain: "quickchat-9dab5.firebaseapp.com",
+      projectId: "quickchat-9dab5",
+      storageBucket: "quickchat-9dab5.appspot.com",
+      messagingSenderId: "58538502227",
+      appId: "1:58538502227:web:ce149e7ac1999217c53ea6"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+    const storage = firebase.storage();
+
+    // ====== Elements ======
+    const el = id => document.getElementById(id);
+    const loading = el('loading');
+    const authCard = el('auth');
+    const app = el('app');
+
+    const email = el('email');
+    const password = el('password');
+    const login = el('login');
+    const register = el('register');
+    const authErr = el('auth-error');
+
+    const meAvatar = el('meAvatar');
+    const meName   = el('meName');
+    const openProfile = el('openProfile');
+    const toggleTheme = el('toggleTheme');
+    const logoutBtn = el('logout');
+
+    const searchUsers = el('searchUsers');
+    const threads = el('threads');
+    const newChat = el('newChat');
+    const newGroup = el('newGroup');
+
+    const header = el('header');
+    const peerAvatar = el('peerAvatar');
+    const peerName = el('peerName');
+    const peerStatus = el('peerStatus');
+    const membersHint = el('membersHint');
+
+    const messages = el('messages');
+    const typing = el('typing');
+
+    const fileInput = el('file');
+    const input = el('input');
+    const send = el('send');
+
+    const emojiBtn = el('emojiBtn');
+    const emojiPicker = el('emojiPicker');
+
+    const replyBox = el('replyBox');
+    const replyText = el('replyText');
+    const cancelReply = el('cancelReply');
+
+    const overlay = el('overlay');
+    const drawer = el('drawer');
+    const closeDrawer = el('closeDrawer');
+    const drawerAvatar = el('drawerAvatar');
+    const nameField = el('name');
+    const avatarFile = el('avatarFile');
+    const saveProfile = el('saveProfile');
+
+    // ====== State ======
+    let me = null;
+    let activeThread = null; // {id, type: 'dm'|'group', members:[uids], peer (for dm)}
+    let unsubscribeMessages = null;
+    let typingTimer = null;
+    let replyingTo = null; // {id, content, sender}
+
+    // ====== Helpers ======
+    const showLoading = (s) => loading.classList.toggle('hidden', !s);
+    const toast = (msg) => console.log(msg);
+    const chatIdFor = (a,b) => a < b ? `${a}_${b}` : `${b}_${a}`;
+    const isDark = () => document.documentElement.classList.contains('dark');
+
+    // Notifications
+    const requestNotify = async () => {
+      try { if (Notification && Notification.permission === 'default') await Notification.requestPermission(); } catch {}
+    };
+    const notify = (title, body) => {
+      try {
+        if (document.hasFocus()) return;
+        if (Notification.permission === 'granted') new Notification(title, { body });
+      } catch {}
+    };
+
+    // Theme
+    const applySavedTheme = () => {
+      const pref = localStorage.getItem('theme') || 'light';
+      document.documentElement.classList.toggle('dark', pref === 'dark');
+    };
+    applySavedTheme();
+
+    toggleTheme.onclick = () => {
+      const newMode = isDark() ? 'light':'dark';
+      document.documentElement.classList.toggle('dark', newMode==='dark');
+      localStorage.setItem('theme', newMode);
+    };
+
+    // Emoji
+    emojiBtn.onclick = () => emojiPicker.classList.toggle('hidden');
+    emojiPicker.addEventListener('emoji-click', e => {
+      input.value += e.detail.unicode;
+      emojiPicker.classList.add('hidden');
+      input.focus();
+    });
+
+    // Drawer
+    const openDrawer = () => { overlay.classList.add('show'); drawer.classList.add('open'); };
+    const closeDrawerFn = () => { overlay.classList.remove('show'); drawer.classList.remove('open'); };
+    openProfile.onclick = openDrawer;
+    closeDrawer.onclick = closeDrawerFn;
+    overlay.onclick = closeDrawerFn;
+
+    // ====== Auth ======
+    register.onclick = async () => {
+      const mail = email.value.trim(), pass = password.value.trim();
+      if (!mail || !pass) return authErr.textContent = "Email & password required";
+      if (pass.length < 6) return authErr.textContent = "Password must be at least 6 characters";
+      showLoading(true);
+      try {
+        const uc = await auth.createUserWithEmailAndPassword(mail, pass);
+        await db.collection('users').doc(uc.user.uid).set({
+          uid: uc.user.uid,
+          email: uc.user.email,
+          displayName: uc.user.email.split('@')[0],
+          avatar: "",
+          online: true,
+          lastSeen: firebase.firestore.FieldValue.serverTimestamp(),
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } catch (e) {
+        authErr.textContent = e.message;
+      }
+      showLoading(false);
+    };
+
+    login.onclick = async () => {
+      const mail = email.value.trim(), pass = password.value.trim();
+      if (!mail || !pass) return authErr.textContent = "Email & password required";
+      showLoading(true);
+      try {
+        await auth.signInWithEmailAndPassword(mail, pass);
+      } catch (e) { authErr.textContent = e.message; }
+      showLoading(false);
+    };
+
+    logoutBtn.onclick = async () => {
+      if (me) await db.collection('users').doc(me.uid).set({ online:false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      await auth.signOut();
+      location.reload();
+    };
+
+    auth.onAuthStateChanged(async (user) => {
+      if (!user) { app.classList.add('hidden'); authCard.classList.remove('hidden'); return; }
+      me = user;
+      // ensure profile exists
+      const uref = db.collection('users').doc(me.uid);
+      const snap = await uref.get();
+      if (!snap.exists) {
+        await uref.set({
+          uid: me.uid, email: me.email, displayName: me.email.split('@')[0],
+          avatar: "", online: true, lastSeen: firebase.firestore.FieldValue.serverTimestamp(),
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        await uref.set({ online:true, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      }
+      // UI init
+      initUI();
+    });
+
+    // ====== UI Init ======
+    function initUI() {
+      authCard.classList.add('hidden'); app.classList.remove('hidden');
+      requestNotify();
+      loadMe();
+      loadThreads();
+      wireComposer();
+    }
+
+    async function loadMe() {
+      const doc = await db.collection('users').doc(me.uid).get();
+      const u = doc.data();
+      meName.textContent = u.displayName || u.email;
+      meAvatar.src = u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || u.email)}`;
+      // drawer defaults
+      nameField.value = u.displayName || u.email;
+      drawerAvatar.src = meAvatar.src;
+    }
+
+    saveProfile.onclick = async () => {
+      showLoading(true);
+      try {
+        let avatarURL = null;
+        if (avatarFile.files[0]) {
+          const ref = storage.ref(`avatars/${me.uid}`);
+          await ref.put(avatarFile.files[0]);
+          avatarURL = await ref.getDownloadURL();
+        }
+        const displayName = nameField.value.trim() || me.email;
+        await me.updateProfile({ displayName, photoURL: avatarURL || me.photoURL || "" });
+        await db.collection('users').doc(me.uid).set({
+          displayName, avatar: avatarURL || me.photoURL || ""
+        }, { merge:true });
+        await loadMe();
+        closeDrawerFn();
+      } catch(e){ toast(e.message); }
+      showLoading(false);
+    };
+
+    // ====== Threads (DMs + Groups) ======
+    function renderThreadItem(t) {
+      const li = document.createElement('button');
+      li.className = "w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-800 transition";
+      li.dataset.thread = t.id;
+
+      const avatarURL = t.type === 'dm'
+        ? (t.peer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer.displayName || t.peer.email)}`)
+        : "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f465.svg"; // group icon
+
+      li.innerHTML = `
+        <img class="w-10 h-10 rounded-full object-cover" src="${avatarURL}">
+        <div class="flex-1 text-left">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">${t.name}</div>
+            <div class="text-xs text-gray-500">${t.lastTime || ''}</div>
+          </div>
+          <div class="text-xs text-gray-500 truncate">${t.lastMsg || 'No messages yet'}</div>
+        </div>
+      `;
+      li.onclick = () => openThread(t);
+      return li;
+    }
+
+    function timeShort(ts) {
+      try {
+        if (!ts) return '';
+        const d = ts.toDate ? ts.toDate() : new Date(ts);
+        return d.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit'});
+      } catch { return ''; }
+    }
+
+    async function loadThreads() {
+      // Listen all chats for this user (DMs and groups)
+      db.collection('threads')
+        .where('members','array-contains', me.uid)
+        .orderBy('updatedAt','desc')
+        .onSnapshot(async (snap) => {
+          threads.innerHTML = '';
+          const items = [];
+          for (const d of snap.docs) {
+            const t = d.data(); t.id = d.id;
+            let name = t.type === 'group' ? (t.name || 'Group') : 'Chat';
+            let peer = null;
+            if (t.type === 'dm') {
+              const otherId = t.members.find(u => u !== me.uid);
+              if (otherId) {
+                const u = (await db.collection('users').doc(otherId).get()).data();
+                peer = { uid: otherId, ...u };
+                name = u.displayName || u.email;
+              }
+            }
+            const lastSnap = await db.collection('threads').doc(t.id).collection('messages').orderBy('timestamp','desc').limit(1).get();
+            const lastMsg = lastSnap.empty ? '' : (lastSnap.docs[0].data().type==='text' ? lastSnap.docs[0].data().content : '[Attachment]');
+            const lastTime = lastSnap.empty ? '' : timeShort(lastSnap.docs[0].data().timestamp);
+            items.push({ id:t.id, type:t.type, name, peer, lastMsg, lastTime, members:t.members });
+          }
+          // filter + search
+          const q = (searchUsers.value||'').toLowerCase();
+          items
+            .filter(x => x.name.toLowerCase().includes(q))
+            .forEach(t => threads.appendChild(renderThreadItem(t)));
+
+          // auto-open first if none active
+          if (!activeThread && items.length) openThread(items[0]);
+        });
+    }
+
+    newChat.onclick = async () => {
+      const emailPeer = prompt("Enter recipient email:");
+      if (!emailPeer) return;
+      const q = await db.collection('users').where('email','==', emailPeer).limit(1).get();
+      if (q.empty) return alert('User not found.');
+      const other = q.docs[0].data();
+      const id = chatIdFor(me.uid, other.uid);
+      const tref = db.collection('threads').doc(id);
+      const tdoc = await tref.get();
+      if (!tdoc.exists) {
+        await tref.set({ id, type:'dm', members:[me.uid, other.uid], updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      }
+      // Let loadThreads pick it up; optionally open immediately
+    };
+
+    newGroup.onclick = async () => {
+      const name = prompt("Group name:");
+      if (!name) return;
+      const emails = prompt("Add members (comma-separated emails):");
+      if (!emails) return;
+      const arr = emails.split(',').map(s=>s.trim()).filter(Boolean);
+      const uids = [me.uid];
+      for (const e of arr) {
+        const q = await db.collection('users').where('email','==', e).limit(1).get();
+        if (!q.empty) uids.push(q.docs[0].data().uid);
+      }
+      const tref = await db.collection('threads').add({
+        type:'group', name, members: Array.from(new Set(uids)), createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      // open created
+      const t = { id: tref.id, type:'group', name, members: uids };
+      openThread(t);
+    };
+
+    // ====== Open Thread ======
+    async function openThread(t) {
+      activeThread = t;
+      // Header
+      if (t.type === 'dm') {
+        peerName.textContent = t.name;
+        peerAvatar.src = t.peer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer.displayName || t.peer.email)}`;
+        // online/last seen
+        const peerRef = await db.collection('users').doc(t.peer.uid).get();
+        const peerData = peerRef.data();
+        const online = !!peerData.online;
+        peerStatus.innerHTML = `<span class="status-dot ${online?'online':'offline'}"></span>${online? 'Online' : ('Last seen ' + (peerData.lastSeen?.toDate?.().toLocaleString() || '—'))}`;
+        membersHint.textContent = '';
+      } else {
+        peerName.textContent = t.name || 'Group';
+        peerAvatar.src = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f465.svg";
+        peerStatus.innerHTML = `<span class="status-dot online"></span>Group`;
+        membersHint.textContent = `${t.members.length} members`;
+      }
+
+      // Messages listener
+      if (unsubscribeMessages) unsubscribeMessages();
+      unsubscribeMessages = db.collection('threads').doc(t.id).collection('messages')
+        .orderBy('timestamp')
+        .onSnapshot((snap) => {
+          messages.innerHTML = '';
+          snap.docs.forEach(doc => renderMessage(doc.id, doc.data()));
+          // Auto-scroll
+          messages.scrollTop = messages.scrollHeight;
+
+          // Mark readBy current user
+          for (const d of snap.docs) {
+            const m = d.data();
+            if (!m.readBy || !m.readBy.includes(me.uid)) {
+              db.collection('threads').doc(t.id).collection('messages').doc(d.id)
+                .set({ readBy: firebase.firestore.FieldValue.arrayUnion(me.uid) }, { merge:true });
+            }
+            // Notify if new message from others
+            if (m.sender !== me.uid && m.timestamp?.toDate && (Date.now() - m.timestamp.toDate().getTime()) < 4000) {
+              notify(t.type==='dm' ? (t.name) : (t.name || 'Group'), m.type==='text' ? m.content : 'New attachment');
+            }
+          }
+        });
+
+      // Typing indicator
+      db.collection('threads').doc(t.id).onSnapshot(ds => {
+        const data = ds.data?.() || ds.data();
+        if (!data) return typing.classList.add('hidden');
+        const who = data.typing;
+        if (who && who !== me.uid) typing.classList.remove('hidden'); else typing.classList.add('hidden');
+      });
+    }
+
+    // ====== Render Message ======
+    function renderMessage(id, m) {
+      const isMe = m.sender === me.uid;
+      const row = document.createElement('div');
+      row.className = `w-full flex ${isMe ? 'justify-end' : 'justify-start'}`;
+
+      const bubble = document.createElement('div');
+      bubble.className = `max-w-[78%] rounded-2xl px-3 py-2 shadow ${isMe ? 'bubble-me' : 'bubble-other'}`;
+
+      // Reply context
+      if (m.replyTo && m.replyPreview) {
+        const r = document.createElement('div');
+        r.className = 'reply-preview mb-1';
+        r.textContent = m.replyPreview;
+        bubble.appendChild(r);
+      }
+
+      // Body
+      if (m.type === 'text') {
+        bubble.appendChild(document.createTextNode(m.content));
+      } else if (m.type === 'file') {
+        const url = m.fileURL, name = m.fileName || 'file';
+        if (/\.(png|jpg|jpeg|gif|webp)$/i.test(name)) {
+          const img = document.createElement('img'); img.src = url; img.className = 'rounded-lg max-w-full mt-1';
+          bubble.appendChild(img);
+        } else if (/\.(mp4|webm|ogg)$/i.test(name)) {
+          bubble.innerHTML += `<video controls class="rounded-lg max-w-full mt-1"><source src="${url}"></video>`;
+        } else {
+          const pill = document.createElement('a'); pill.href = url; pill.target='_blank';
+          pill.className='file-pill mt-1'; pill.innerHTML = '📎 <span class="underline">'+name+'</span>';
+          bubble.appendChild(pill);
+        }
+      }
+
+      // Footer (time + receipts)
+      const footer = document.createElement('div');
+      footer.className = 'flex items-center justify-end gap-2 mt-1 rct';
+      const t = m.timestamp?.toDate?.() ? m.timestamp.toDate() : new Date();
+      const time = document.createElement('span'); time.textContent = t.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      footer.appendChild(time);
+
+      // Receipts
+      if (isMe) {
+        const seen = m.readBy && activeThread
+          ? (activeThread.type==='dm' ? m.readBy.includes(activeThread.peer?.uid) : (activeThread.members || []).some(u=>u!==me.uid && m.readBy.includes(u)))
+          : false;
+        const tick = document.createElement('span'); tick.textContent = seen ? '✓✓' : '✓';
+        tick.style.opacity = seen ? 1 : 0.7;
+        footer.appendChild(tick);
+      }
+      bubble.appendChild(footer);
+
+      // Reactions
+      const rbar = document.createElement('div');
+      rbar.className = 'mt-1 flex items-center gap-2 text-sm';
+      ['👍','❤️','😂'].forEach(emo => {
+        const b = document.createElement('button');
+        const count = (m.reactions && m.reactions[emo]) ? m.reactions[emo].length : 0;
+        b.textContent = count ? `${emo} ${count}` : emo;
+        b.className = 'px-2 py-0.5 rounded bg-black/10 hover:bg-black/20 dark:bg-white/10 dark:hover:bg-white/20';
+        b.onclick = () => toggleReaction(id, emo);
+        rbar.appendChild(b);
+      });
+      bubble.appendChild(rbar);
+
+      // Actions (reply/delete)
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions mt-1 flex gap-2 justify-end text-xs';
+      const replyBtn = document.createElement('button'); replyBtn.textContent = 'Reply';
+      replyBtn.className = 'px-2 py-1 rounded bg-blue-100 dark:bg-blue-900/40';
+      replyBtn.onclick = () => startReply(id, m);
+      actions.appendChild(replyBtn);
+
+      if (isMe) {
+        const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
+        delBtn.className = 'px-2 py-1 rounded bg-rose-100 dark:bg-rose-900/40';
+        delBtn.onclick = () => deleteMessage(id);
+        actions.appendChild(delBtn);
+      }
+      bubble.appendChild(actions);
+
+      row.appendChild(bubble);
+      messages.appendChild(row);
+    }
+
+    async function toggleReaction(msgId, emo) {
+      const ref = db.collection('threads').doc(activeThread.id).collection('messages').doc(msgId);
+      const snap = await ref.get();
+      const m = snap.data() || {};
+      const reactions = m.reactions || {};
+      const arr = reactions[emo] || [];
+      const i = arr.indexOf(me.uid);
+      if (i === -1) arr.push(me.uid); else arr.splice(i,1);
+      reactions[emo] = arr;
+      await ref.set({ reactions }, { merge:true });
+    }
+
+    function startReply(id, m) {
+      replyingTo = { id, content: m.type==='text' ? m.content : (m.fileName || 'Attachment'), sender: m.sender };
+      replyText.textContent = replyingTo.content.slice(0, 140);
+      replyBox.classList.remove('hidden');
+      input.focus();
+    }
+    cancelReply.onclick = () => { replyingTo = null; replyBox.classList.add('hidden'); };
+
+    async function deleteMessage(msgId) {
+      if (!confirm('Delete this message?')) return;
+      await db.collection('threads').doc(activeThread.id).collection('messages').doc(msgId).delete();
+    }
+
+    // ====== Composer ======
+    function wireComposer() {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+      });
+
+      input.addEventListener('input', () => {
+        if (!activeThread) return;
+        clearTimeout(typingTimer);
+        db.collection('threads').doc(activeThread.id).set({ typing: me.uid }, { merge:true });
+        typingTimer = setTimeout(()=> {
+          db.collection('threads').doc(activeThread.id).set({ typing: null }, { merge:true });
+        }, 1200);
+      });
+
+      send.onclick = sendMessage;
+    }
+
+    async function sendMessage() {
+      if (!activeThread) return alert('Select a chat first.');
+      const tref = db.collection('threads').doc(activeThread.id);
+
+      const msg = {
+        sender: me.uid,
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        readBy: [me.uid]
+      };
+
+      // File?
+      const f = fileInput.files[0];
+      if (f) {
+        showLoading(true);
+        try {
+          const sref = storage.ref(`files/${activeThread.id}/${Date.now()}_${f.name}`);
+          await sref.put(f);
+          const url = await sref.getDownloadURL();
+          msg.type = 'file'; msg.fileURL = url; msg.fileName = f.name;
+        } finally { fileInput.value = ''; showLoading(false); }
+      } else {
+        const text = input.value.trim();
+        if (!text) return;
+        msg.type = 'text'; msg.content = text;
+      }
+
+      // Reply meta
+      if (replyingTo) {
+        msg.replyTo = replyingTo.id;
+        msg.replyPreview = replyingTo.content;
+      }
+
+      await tref.collection('messages').add(msg);
+      await tref.set({ updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+
+      // reset
+      input.value = '';
+      replyingTo = null; replyBox.classList.add('hidden');
+      await tref.set({ typing: null }, { merge:true });
+    }
+
+    // ====== Search filter ======
+    searchUsers.addEventListener('input', () => loadThreads());
+
+    // ====== Before unload: set last seen ======
+    window.addEventListener('beforeunload', async () => {
+      if (me) await db.collection('users').doc(me.uid).set({ online:false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+    });
+  </script>
+</body>
+</html>
