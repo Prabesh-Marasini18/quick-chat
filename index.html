@@ -221,6 +221,8 @@
     let unsubscribeMessages = null;
     let typingTimer = null;
     let replyingTo = null;
+    let rawThreads = [];
+    let allUsers = [];
 
     // ====== Helpers ======
     const showLoading = (s) => loading.classList.toggle('hidden', !s);
@@ -344,7 +346,8 @@
       authCard.classList.add('hidden'); app.classList.remove('hidden');
       requestNotify();
       loadMe();
-    loadThreads();
+      setThreadsListener();
+      setUsersListener();
       wireComposer();
     }
 
@@ -385,7 +388,7 @@
       li.className = "w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-800 transition";
       li.dataset.thread = t.id;
 
-      const avatarURL = t.type === 'dm'
+      const avatarURL = t.type === 'dm' || t.type === 'user'
         ? (t.peer?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer?.displayName || t.peer?.email || 'U')}`)
         : "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f465.svg";
 
@@ -399,7 +402,13 @@
           <div class="text-xs text-gray-500 truncate">${t.lastMsg || 'No messages yet'}</div>
         </div>
       `;
-      li.onclick = () => openThread(t);
+      li.onclick = () => {
+        if (t.type === 'user') {
+          createDM(t.peer);
+        } else {
+          openThread(t);
+        }
+      };
       return li;
     }
 
@@ -411,13 +420,11 @@
       } catch { return ''; }
     }
 
-    async function loadThreads() {
-      // Load all threads where user is a member
+    function setThreadsListener() {
       db.collection('threads')
         .where('members','array-contains', me.uid)
         .onSnapshot(async (snap) => {
-          threads.innerHTML = '';
-          const items = [];
+          rawThreads = [];
           for (const d of snap.docs) {
             const t = d.data(); t.id = d.id;
             let name = t.type === 'group' ? (t.name || 'Group') : 'Chat';
@@ -434,7 +441,7 @@
             const lastMsg = lastSnap.empty ? '' : (lastSnap.docs[0].data().type==='text' ? lastSnap.docs[0].data().content : '[Attachment]');
             const lastTime = lastSnap.empty ? '' : timeShort(lastSnap.docs[0].data().timestamp);
             const updatedAt = t.updatedAt?.toDate?.() ? t.updatedAt.toDate().getTime() : 0;
-            items.push({ id:t.id, type:t.type, name, peer, lastMsg, lastTime, members:t.members || [], updatedAt });
+            rawThreads.push({ id:t.id, type:t.type, name, peer, lastMsg, lastTime, members:t.members || [], updatedAt });
           }
 
           // Always include the global chat thread
@@ -442,25 +449,53 @@
           if (!globalSnap.empty) {
             const g = globalSnap.docs[0].data(); g.id = globalSnap.docs[0].id;
             // Only add if not already present
-            if (!items.some(x => x.id === g.id)) {
+            if (!rawThreads.some(x => x.id === g.id)) {
               const lastSnap = await db.collection('threads').doc(g.id).collection('messages').orderBy('timestamp','desc').limit(1).get();
               const lastMsg = lastSnap.empty ? '' : (lastSnap.docs[0].data().type==='text' ? lastSnap.docs[0].data().content : '[Attachment]');
               const lastTime = lastSnap.empty ? '' : timeShort(lastSnap.docs[0].data().timestamp);
               const updatedAt = g.updatedAt?.toDate?.() ? g.updatedAt.toDate().getTime() : 0;
-              items.push({ id:g.id, type:'group', name:'Global Chat', peer:null, lastMsg, lastTime, members:g.members || [], updatedAt });
+              rawThreads.push({ id:g.id, type:'group', name:'Global Chat', peer:null, lastMsg, lastTime, members:g.members || [], updatedAt });
             }
           }
 
-          // search + client-side sort (desc by updatedAt)
-          const q = (searchUsers.value||'').toLowerCase();
-          items
-            .filter(x => x.name.toLowerCase().includes(q))
-            .sort((a,b)=> b.updatedAt - a.updatedAt)
-            .forEach(t => threads.appendChild(renderThreadItem(t)));
+          renderSidebar();
 
-          if (!activeThread && items.length) openThread(items[0]);
+          if (!activeThread && rawThreads.length) openThread(rawThreads[0]);
         });
     }
+
+    function setUsersListener() {
+      db.collection('users').onSnapshot(snap => {
+        allUsers = snap.docs.map(doc => ({uid: doc.id, ...doc.data()}));
+        renderSidebar();
+      });
+    }
+
+    function renderSidebar() {
+      const q = (searchUsers.value || '').toLowerCase();
+      threads.innerHTML = '';
+      let items = rawThreads.filter(x => x.name.toLowerCase().includes(q));
+
+      if (q) {
+        const potentialUsers = allUsers.filter(u => u.uid !== me.uid && u.displayName.toLowerCase().includes(q) && !rawThreads.some(rt => rt.type === 'dm' && rt.peer?.uid === u.uid));
+        potentialUsers.forEach(u => {
+          items.push({
+            id: null,
+            type: 'user',
+            name: u.displayName,
+            peer: u,
+            lastMsg: 'Start a new conversation',
+            lastTime: '',
+            updatedAt: 0
+          });
+        });
+      }
+
+      items
+        .sort((a,b)=> b.updatedAt - a.updatedAt)
+        .forEach(t => threads.appendChild(renderThreadItem(t)));
+    }
+
     // ====== Ensure Global Chat Membership ======
     async function ensureGlobalChatMembership(uid) {
       // Try to find the global chat thread
@@ -518,6 +553,27 @@
       const t = { id: tref.id, type:'group', name, members: uids };
       openThread(t);
     };
+
+    async function createDM(peer) {
+      const id = chatIdFor(me.uid, peer.uid);
+      const tref = db.collection('threads').doc(id);
+      const snap = await tref.get();
+      if (!snap.exists) {
+        await tref.set({
+          type: 'dm',
+          members: [me.uid, peer.uid],
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+      openThread({
+        id,
+        type: 'dm',
+        name: peer.displayName,
+        peer,
+        members: [me.uid, peer.uid]
+      });
+    }
 
     // ====== Open Thread ======
     async function openThread(t) {
@@ -733,7 +789,7 @@
     }
 
     // ====== Search filter ======
-    searchUsers.addEventListener('input', () => loadThreads());
+    searchUsers.addEventListener('input', () => renderSidebar());
 
     // ====== Before unload: set last seen ======
     window.addEventListener('beforeunload', async () => {
