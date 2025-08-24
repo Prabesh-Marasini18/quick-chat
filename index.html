@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>QuickChat — Modern</title>
+
+  <!-- Tailwind + Emoji Picker -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1"></script>
 
@@ -14,20 +16,11 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
 
   <style>
-    /* Emoji picker placement */
-    emoji-picker { position: absolute; bottom: 64px; right: 12px; z-index: 50;}
-
-    /* Dark mode helpers (on top of Tailwind) */
+    emoji-picker { position: absolute; bottom: 64px; right: 12px; z-index: 50; }
     .dark body { background: #111827; color: #e5e7eb; }
-    .glass {
-      backdrop-filter: blur(10px);
-      background: rgba(255,255,255,0.6);
-    }
+    .glass { backdrop-filter: blur(10px); background: rgba(255,255,255,0.6); }
     .dark .glass { background: rgba(31,41,55,0.6); }
-    .bubble-me {
-      background: linear-gradient(135deg,#3b82f6 0%, #2563eb 100%);
-      color:#fff;
-    }
+    .bubble-me { background: linear-gradient(135deg,#3b82f6 0%, #2563eb 100%); color:#fff; }
     .dark .bubble-other { background:#374151; color:#e5e7eb; }
     .bubble-other { background:#e5e7eb; color:#111827; }
     .status-dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
@@ -48,7 +41,7 @@
 <body class="min-h-screen bg-gradient-to-br from-indigo-50 to-emerald-50 dark:from-gray-900 dark:to-gray-800 transition-colors">
 
   <!-- Loading -->
-  <div id="loading" class="fixed inset-0 hidden items-center justify-center z-50">
+  <div id="loading" class="fixed inset-0 hidden items-center justify-center z-50 bg-black/5">
     <div class="w-12 h-12 border-4 border-gray-200 border-t-blue-500 rounded-full animate-spin"></div>
   </div>
 
@@ -157,7 +150,6 @@
     </div>
   </div>
 
-  
   <script>
     // ====== Firebase ======
     const firebaseConfig = {
@@ -196,7 +188,6 @@
     const newChat = el('newChat');
     const newGroup = el('newGroup');
 
-    const header = el('header');
     const peerAvatar = el('peerAvatar');
     const peerName = el('peerName');
     const peerStatus = el('peerStatus');
@@ -226,10 +217,10 @@
 
     // ====== State ======
     let me = null;
-    let activeThread = null; // {id, type: 'dm'|'group', members:[uids], peer (for dm)}
+    let activeThread = null;
     let unsubscribeMessages = null;
     let typingTimer = null;
-    let replyingTo = null; // {id, content, sender}
+    let replyingTo = null;
 
     // ====== Helpers ======
     const showLoading = (s) => loading.classList.toggle('hidden', !s);
@@ -238,15 +229,8 @@
     const isDark = () => document.documentElement.classList.contains('dark');
 
     // Notifications
-    const requestNotify = async () => {
-      try { if (Notification && Notification.permission === 'default') await Notification.requestPermission(); } catch {}
-    };
-    const notify = (title, body) => {
-      try {
-        if (document.hasFocus()) return;
-        if (Notification.permission === 'granted') new Notification(title, { body });
-      } catch {}
-    };
+    const requestNotify = async () => { try { if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission(); } catch(e) {} };
+    const notify = (title, body) => { try { if (!document.hasFocus() && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body }); } catch(e) {} };
 
     // Theme
     const applySavedTheme = () => {
@@ -254,7 +238,6 @@
       document.documentElement.classList.toggle('dark', pref === 'dark');
     };
     applySavedTheme();
-
     toggleTheme.onclick = () => {
       const newMode = isDark() ? 'light':'dark';
       document.documentElement.classList.toggle('dark', newMode==='dark');
@@ -276,12 +259,27 @@
     closeDrawer.onclick = closeDrawerFn;
     overlay.onclick = closeDrawerFn;
 
-    // ====== Auth ======
+    // ====== Auth (robust) ======
+    const setAuthBusy = (busy) => {
+      [login, register].forEach(b=>{ b.disabled = busy; b.classList.toggle('opacity-60', busy); });
+      showLoading(busy);
+    };
+    const mapAuthError = (code) => ({
+      "auth/invalid-email": "That email looks invalid.",
+      "auth/email-already-in-use": "Email already registered. Try logging in.",
+      "auth/weak-password": "Password must be at least 6 characters.",
+      "auth/missing-password": "Enter your password.",
+      "auth/user-not-found": "No user with that email.",
+      "auth/wrong-password": "Wrong password.",
+      "auth/invalid-login-credentials": "Email or password is incorrect.",
+    }[code] || "Authentication failed. Please try again.");
+
     register.onclick = async () => {
       const mail = email.value.trim(), pass = password.value.trim();
-      if (!mail || !pass) return authErr.textContent = "Email & password required";
-      if (pass.length < 6) return authErr.textContent = "Password must be at least 6 characters";
-      showLoading(true);
+      authErr.textContent = "";
+      if (!mail || !pass) { authErr.textContent = "Email & password required"; return; }
+      if (pass.length < 6) { authErr.textContent = "Password must be at least 6 characters"; return; }
+      setAuthBusy(true);
       try {
         const uc = await auth.createUserWithEmailAndPassword(mail, pass);
         await db.collection('users').doc(uc.user.uid).set({
@@ -294,43 +292,47 @@
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
       } catch (e) {
-        authErr.textContent = e.message;
-      }
-      showLoading(false);
+        authErr.textContent = mapAuthError(e.code || "") + (e.message ? ` (${e.message})` : "");
+      } finally { setAuthBusy(false); }
     };
 
     login.onclick = async () => {
       const mail = email.value.trim(), pass = password.value.trim();
-      if (!mail || !pass) return authErr.textContent = "Email & password required";
-      showLoading(true);
+      authErr.textContent = "";
+      if (!mail || !pass) { authErr.textContent = "Email & password required"; return; }
+      setAuthBusy(true);
       try {
         await auth.signInWithEmailAndPassword(mail, pass);
-      } catch (e) { authErr.textContent = e.message; }
-      showLoading(false);
+      } catch (e) {
+        authErr.textContent = mapAuthError(e.code || "") + (e.message ? ` (${e.message})` : "");
+      } finally { setAuthBusy(false); }
     };
 
     logoutBtn.onclick = async () => {
-      if (me) await db.collection('users').doc(me.uid).set({ online:false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      await auth.signOut();
-      location.reload();
+      try {
+        if (me) await db.collection('users').doc(me.uid).set({ online:false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        await auth.signOut();
+        location.reload();
+      } catch(e){ toast(e.message); }
     };
 
     auth.onAuthStateChanged(async (user) => {
       if (!user) { app.classList.add('hidden'); authCard.classList.remove('hidden'); return; }
       me = user;
-      // ensure profile exists
-      const uref = db.collection('users').doc(me.uid);
-      const snap = await uref.get();
-      if (!snap.exists) {
-        await uref.set({
-          uid: me.uid, email: me.email, displayName: me.email.split('@')[0],
-          avatar: "", online: true, lastSeen: firebase.firestore.FieldValue.serverTimestamp(),
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-      } else {
-        await uref.set({ online:true, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      }
-      // UI init
+      try {
+        // ensure profile exists
+        const uref = db.collection('users').doc(me.uid);
+        const snap = await uref.get();
+        if (!snap.exists) {
+          await uref.set({
+            uid: me.uid, email: me.email, displayName: me.email.split('@')[0],
+            avatar: "", online: true, lastSeen: firebase.firestore.FieldValue.serverTimestamp(),
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        } else {
+          await uref.set({ online:true, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        }
+      } catch(e){ toast(e.message); }
       initUI();
     });
 
@@ -344,13 +346,14 @@
     }
 
     async function loadMe() {
-      const doc = await db.collection('users').doc(me.uid).get();
-      const u = doc.data();
-      meName.textContent = u.displayName || u.email;
-      meAvatar.src = u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || u.email)}`;
-      // drawer defaults
-      nameField.value = u.displayName || u.email;
-      drawerAvatar.src = meAvatar.src;
+      try {
+        const doc = await db.collection('users').doc(me.uid).get();
+        const u = doc.data() || {};
+        meName.textContent = u.displayName || u.email || 'Me';
+        meAvatar.src = u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || u.email || 'U')}`;
+        nameField.value = u.displayName || u.email || '';
+        drawerAvatar.src = meAvatar.src;
+      } catch(e){ toast(e.message); }
     }
 
     saveProfile.onclick = async () => {
@@ -380,8 +383,8 @@
       li.dataset.thread = t.id;
 
       const avatarURL = t.type === 'dm'
-        ? (t.peer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer.displayName || t.peer.email)}`)
-        : "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f465.svg"; // group icon
+        ? (t.peer?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer?.displayName || t.peer?.email || 'U')}`)
+        : "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f465.svg";
 
       li.innerHTML = `
         <img class="w-10 h-10 rounded-full object-cover" src="${avatarURL}">
@@ -406,10 +409,9 @@
     }
 
     async function loadThreads() {
-      // Listen all chats for this user (DMs and groups)
+      // IMPORTANT: avoid composite-index requirement (no orderBy here).
       db.collection('threads')
         .where('members','array-contains', me.uid)
-        .orderBy('updatedAt','desc')
         .onSnapshot(async (snap) => {
           threads.innerHTML = '';
           const items = [];
@@ -418,25 +420,27 @@
             let name = t.type === 'group' ? (t.name || 'Group') : 'Chat';
             let peer = null;
             if (t.type === 'dm') {
-              const otherId = t.members.find(u => u !== me.uid);
+              const otherId = (t.members || []).find(u => u !== me.uid);
               if (otherId) {
-                const u = (await db.collection('users').doc(otherId).get()).data();
+                const u = (await db.collection('users').doc(otherId).get()).data() || {};
                 peer = { uid: otherId, ...u };
-                name = u.displayName || u.email;
+                name = u.displayName || u.email || 'Chat';
               }
             }
             const lastSnap = await db.collection('threads').doc(t.id).collection('messages').orderBy('timestamp','desc').limit(1).get();
             const lastMsg = lastSnap.empty ? '' : (lastSnap.docs[0].data().type==='text' ? lastSnap.docs[0].data().content : '[Attachment]');
             const lastTime = lastSnap.empty ? '' : timeShort(lastSnap.docs[0].data().timestamp);
-            items.push({ id:t.id, type:t.type, name, peer, lastMsg, lastTime, members:t.members });
+            const updatedAt = t.updatedAt?.toDate?.() ? t.updatedAt.toDate().getTime() : 0;
+            items.push({ id:t.id, type:t.type, name, peer, lastMsg, lastTime, members:t.members || [], updatedAt });
           }
-          // filter + search
+
+          // search + client-side sort (desc by updatedAt)
           const q = (searchUsers.value||'').toLowerCase();
           items
             .filter(x => x.name.toLowerCase().includes(q))
+            .sort((a,b)=> b.updatedAt - a.updatedAt)
             .forEach(t => threads.appendChild(renderThreadItem(t)));
 
-          // auto-open first if none active
           if (!activeThread && items.length) openThread(items[0]);
         });
     }
@@ -453,14 +457,11 @@
       if (!tdoc.exists) {
         await tref.set({ id, type:'dm', members:[me.uid, other.uid], updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
       }
-      // Let loadThreads pick it up; optionally open immediately
     };
 
     newGroup.onclick = async () => {
-      const name = prompt("Group name:");
-      if (!name) return;
-      const emails = prompt("Add members (comma-separated emails):");
-      if (!emails) return;
+      const name = prompt("Group name:"); if (!name) return;
+      const emails = prompt("Add members (comma-separated emails):"); if (!emails) return;
       const arr = emails.split(',').map(s=>s.trim()).filter(Boolean);
       const uids = [me.uid];
       for (const e of arr) {
@@ -468,10 +469,10 @@
         if (!q.empty) uids.push(q.docs[0].data().uid);
       }
       const tref = await db.collection('threads').add({
-        type:'group', name, members: Array.from(new Set(uids)), createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        type:'group', name, members: Array.from(new Set(uids)),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
-      // open created
       const t = { id: tref.id, type:'group', name, members: uids };
       openThread(t);
     };
@@ -479,21 +480,22 @@
     // ====== Open Thread ======
     async function openThread(t) {
       activeThread = t;
+
       // Header
       if (t.type === 'dm') {
         peerName.textContent = t.name;
-        peerAvatar.src = t.peer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer.displayName || t.peer.email)}`;
-        // online/last seen
+        peerAvatar.src = t.peer?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.peer?.displayName || t.peer?.email || 'U')}`;
         const peerRef = await db.collection('users').doc(t.peer.uid).get();
-        const peerData = peerRef.data();
+        const peerData = peerRef.data() || {};
         const online = !!peerData.online;
-        peerStatus.innerHTML = `<span class="status-dot ${online?'online':'offline'}"></span>${online? 'Online' : ('Last seen ' + (peerData.lastSeen?.toDate?.().toLocaleString() || '—'))}`;
+        const lastSeen = peerData.lastSeen?.toDate?.() ? peerData.lastSeen.toDate().toLocaleString() : '—';
+        peerStatus.innerHTML = `<span class="status-dot ${online?'online':'offline'}"></span>${online? 'Online' : ('Last seen ' + lastSeen)}`;
         membersHint.textContent = '';
       } else {
         peerName.textContent = t.name || 'Group';
         peerAvatar.src = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f465.svg";
         peerStatus.innerHTML = `<span class="status-dot online"></span>Group`;
-        membersHint.textContent = `${t.members.length} members`;
+        membersHint.textContent = `${(t.members || []).length} members`;
       }
 
       // Messages listener
@@ -503,17 +505,15 @@
         .onSnapshot((snap) => {
           messages.innerHTML = '';
           snap.docs.forEach(doc => renderMessage(doc.id, doc.data()));
-          // Auto-scroll
           messages.scrollTop = messages.scrollHeight;
 
-          // Mark readBy current user
+          // Mark read & notify
           for (const d of snap.docs) {
             const m = d.data();
             if (!m.readBy || !m.readBy.includes(me.uid)) {
               db.collection('threads').doc(t.id).collection('messages').doc(d.id)
                 .set({ readBy: firebase.firestore.FieldValue.arrayUnion(me.uid) }, { merge:true });
             }
-            // Notify if new message from others
             if (m.sender !== me.uid && m.timestamp?.toDate && (Date.now() - m.timestamp.toDate().getTime()) < 4000) {
               notify(t.type==='dm' ? (t.name) : (t.name || 'Group'), m.type==='text' ? m.content : 'New attachment');
             }
@@ -538,7 +538,6 @@
       const bubble = document.createElement('div');
       bubble.className = `max-w-[78%] rounded-2xl px-3 py-2 shadow ${isMe ? 'bubble-me' : 'bubble-other'}`;
 
-      // Reply context
       if (m.replyTo && m.replyPreview) {
         const r = document.createElement('div');
         r.className = 'reply-preview mb-1';
@@ -546,9 +545,8 @@
         bubble.appendChild(r);
       }
 
-      // Body
       if (m.type === 'text') {
-        bubble.appendChild(document.createTextNode(m.content));
+        bubble.appendChild(document.createTextNode(m.content || ''));
       } else if (m.type === 'file') {
         const url = m.fileURL, name = m.fileName || 'file';
         if (/\.(png|jpg|jpeg|gif|webp)$/i.test(name)) {
@@ -563,14 +561,12 @@
         }
       }
 
-      // Footer (time + receipts)
       const footer = document.createElement('div');
       footer.className = 'flex items-center justify-end gap-2 mt-1 rct';
       const t = m.timestamp?.toDate?.() ? m.timestamp.toDate() : new Date();
       const time = document.createElement('span'); time.textContent = t.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
       footer.appendChild(time);
 
-      // Receipts
       if (isMe) {
         const seen = m.readBy && activeThread
           ? (activeThread.type==='dm' ? m.readBy.includes(activeThread.peer?.uid) : (activeThread.members || []).some(u=>u!==me.uid && m.readBy.includes(u)))
@@ -581,7 +577,6 @@
       }
       bubble.appendChild(footer);
 
-      // Reactions
       const rbar = document.createElement('div');
       rbar.className = 'mt-1 flex items-center gap-2 text-sm';
       ['👍','❤️','😂'].forEach(emo => {
@@ -594,7 +589,6 @@
       });
       bubble.appendChild(rbar);
 
-      // Actions (reply/delete)
       const actions = document.createElement('div');
       actions.className = 'msg-actions mt-1 flex gap-2 justify-end text-xs';
       const replyBtn = document.createElement('button'); replyBtn.textContent = 'Reply';
@@ -628,7 +622,7 @@
 
     function startReply(id, m) {
       replyingTo = { id, content: m.type==='text' ? m.content : (m.fileName || 'Attachment'), sender: m.sender };
-      replyText.textContent = replyingTo.content.slice(0, 140);
+      replyText.textContent = (replyingTo.content || '').slice(0, 140);
       replyBox.classList.remove('hidden');
       input.focus();
     }
@@ -667,7 +661,6 @@
         readBy: [me.uid]
       };
 
-      // File?
       const f = fileInput.files[0];
       if (f) {
         showLoading(true);
@@ -676,14 +669,14 @@
           await sref.put(f);
           const url = await sref.getDownloadURL();
           msg.type = 'file'; msg.fileURL = url; msg.fileName = f.name;
-        } finally { fileInput.value = ''; showLoading(false); }
+        } catch(e){ toast(e.message); }
+        finally { fileInput.value = ''; showLoading(false); }
       } else {
         const text = input.value.trim();
         if (!text) return;
         msg.type = 'text'; msg.content = text;
       }
 
-      // Reply meta
       if (replyingTo) {
         msg.replyTo = replyingTo.id;
         msg.replyPreview = replyingTo.content;
@@ -692,7 +685,6 @@
       await tref.collection('messages').add(msg);
       await tref.set({ updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
 
-      // reset
       input.value = '';
       replyingTo = null; replyBox.classList.add('hidden');
       await tref.set({ typing: null }, { merge:true });
@@ -703,7 +695,9 @@
 
     // ====== Before unload: set last seen ======
     window.addEventListener('beforeunload', async () => {
-      if (me) await db.collection('users').doc(me.uid).set({ online:false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      try {
+        if (me) await db.collection('users').doc(me.uid).set({ online:false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      } catch(e){}
     });
   </script>
 </body>
