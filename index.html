@@ -332,6 +332,8 @@
         } else {
           await uref.set({ online:true, lastSeen: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
         }
+    // Ensure global chat exists and user is a member
+    await ensureGlobalChatMembership(me.uid);
       } catch(e){ toast(e.message); }
       initUI();
     });
@@ -341,7 +343,7 @@
       authCard.classList.add('hidden'); app.classList.remove('hidden');
       requestNotify();
       loadMe();
-      loadThreads();
+    loadThreads();
       wireComposer();
     }
 
@@ -409,7 +411,7 @@
     }
 
     async function loadThreads() {
-      // IMPORTANT: avoid composite-index requirement (no orderBy here).
+      // Load all threads where user is a member
       db.collection('threads')
         .where('members','array-contains', me.uid)
         .onSnapshot(async (snap) => {
@@ -434,6 +436,20 @@
             items.push({ id:t.id, type:t.type, name, peer, lastMsg, lastTime, members:t.members || [], updatedAt });
           }
 
+          // Always include the global chat thread
+          const globalSnap = await db.collection('threads').where('type','==','group').where('name','==','Global Chat').limit(1).get();
+          if (!globalSnap.empty) {
+            const g = globalSnap.docs[0].data(); g.id = globalSnap.docs[0].id;
+            // Only add if not already present
+            if (!items.some(x => x.id === g.id)) {
+              const lastSnap = await db.collection('threads').doc(g.id).collection('messages').orderBy('timestamp','desc').limit(1).get();
+              const lastMsg = lastSnap.empty ? '' : (lastSnap.docs[0].data().type==='text' ? lastSnap.docs[0].data().content : '[Attachment]');
+              const lastTime = lastSnap.empty ? '' : timeShort(lastSnap.docs[0].data().timestamp);
+              const updatedAt = g.updatedAt?.toDate?.() ? g.updatedAt.toDate().getTime() : 0;
+              items.push({ id:g.id, type:'group', name:'Global Chat', peer:null, lastMsg, lastTime, members:g.members || [], updatedAt });
+            }
+          }
+
           // search + client-side sort (desc by updatedAt)
           const q = (searchUsers.value||'').toLowerCase();
           items
@@ -443,6 +459,31 @@
 
           if (!activeThread && items.length) openThread(items[0]);
         });
+    }
+    // ====== Ensure Global Chat Membership ======
+    async function ensureGlobalChatMembership(uid) {
+      // Try to find the global chat thread
+      const globalSnap = await db.collection('threads').where('type','==','group').where('name','==','Global Chat').limit(1).get();
+      if (globalSnap.empty) {
+        // Create global chat with all users
+        const usersSnap = await db.collection('users').get();
+        const allUids = usersSnap.docs.map(doc => doc.id);
+        await db.collection('threads').add({
+          type: 'group', name: 'Global Chat', members: allUids,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }); 
+      } else {
+        // Add user to global chat if not present
+        const globalDoc = globalSnap.docs[0];
+        const members = globalDoc.data().members || [];
+        if (!members.includes(uid)) {
+          await db.collection('threads').doc(globalDoc.id).update({
+            members: firebase.firestore.FieldValue.arrayUnion(uid),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      }
     }
 
     newChat.onclick = async () => {
